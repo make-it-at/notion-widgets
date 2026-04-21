@@ -368,7 +368,7 @@ function placeChild(parent) {
 // ─── ノード操作 ───────────────────────────────────────────
 function addChild() {
   const parent = nodes.find(n => n.id === selectedId);
-  if (!parent) { alert('ノードを選択してください'); return; }
+  if (!parent) { showToast('ノードを選択してください'); return; }
 
   snapshot();
   if (parent.collapsed) parent.collapsed = false;
@@ -588,6 +588,67 @@ function showPngModal(dataUrl) {
   document.body.appendChild(modal);
 }
 
+// ─── カスタムUI（confirm / toast） ────────────────────────
+// iframeでは confirm() / alert() がブロックされるため独自実装
+function showConfirm(message, onOk) {
+  const modal = document.createElement('div');
+  modal.style.cssText = [
+    'position:fixed', 'inset:0', 'background:rgba(0,0,0,0.55)',
+    'display:flex', 'align-items:center', 'justify-content:center',
+    'z-index:9999', 'padding:16px',
+  ].join(';');
+
+  const box = document.createElement('div');
+  box.style.cssText = [
+    'background:#fff', 'border-radius:12px', 'padding:20px 24px',
+    'max-width:280px', 'width:100%', 'text-align:center',
+    'box-shadow:0 8px 32px rgba(0,0,0,0.2)',
+  ].join(';');
+
+  const msg = document.createElement('p');
+  msg.textContent = message;
+  msg.style.cssText = 'font-size:13px;color:#333;margin-bottom:16px;line-height:1.5';
+
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:8px;justify-content:center';
+
+  const btnCancel = document.createElement('button');
+  btnCancel.textContent = 'キャンセル';
+  btnCancel.style.cssText = [
+    'padding:6px 16px', 'border:1px solid #ddd', 'border-radius:6px',
+    'background:#f5f5f5', 'color:#555', 'cursor:pointer', 'font-size:12px',
+  ].join(';');
+  btnCancel.onclick = () => modal.remove();
+
+  const btnOk = document.createElement('button');
+  btnOk.textContent = 'リセット';
+  btnOk.style.cssText = [
+    'padding:6px 16px', 'border:none', 'border-radius:6px',
+    'background:#ea4335', 'color:#fff', 'cursor:pointer', 'font-size:12px', 'font-weight:500',
+  ].join(';');
+  btnOk.onclick = () => { modal.remove(); onOk(); };
+
+  row.append(btnCancel, btnOk);
+  box.append(msg, row);
+  modal.appendChild(box);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  document.body.appendChild(modal);
+  btnOk.focus();
+}
+
+function showToast(message) {
+  const toast = document.createElement('div');
+  toast.textContent = message;
+  toast.style.cssText = [
+    'position:fixed', 'bottom:16px', 'left:50%', 'transform:translateX(-50%)',
+    'background:rgba(0,0,0,0.75)', 'color:#fff', 'padding:7px 16px',
+    'border-radius:20px', 'font-size:12px', 'z-index:9999',
+    'pointer-events:none', 'white-space:nowrap',
+  ].join(';');
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 2000);
+}
+
 // ─── ポインタイベント ─────────────────────────────────────
 function pointerPos(e) {
   const r = canvas.getBoundingClientRect();
@@ -763,10 +824,11 @@ document.addEventListener('keydown', e => {
 document.getElementById('btnAdd').addEventListener('click', addChild);
 document.getElementById('btnPng').addEventListener('click', exportPng);
 document.getElementById('btnReset').addEventListener('click', () => {
-  if (!confirm('マインドマップをリセットしますか？')) return;
-  ['mm2_nodes', 'mm2_nextId', 'mm2_view'].forEach(k => localStorage.removeItem(k));
-  initDefault();
-  draw();
+  showConfirm('マインドマップをリセットしますか？', () => {
+    ['mm2_nodes', 'mm2_nextId', 'mm2_view'].forEach(k => localStorage.removeItem(k));
+    initDefault();
+    draw();
+  });
 });
 
 // ─── 起動 ─────────────────────────────────────────────────
