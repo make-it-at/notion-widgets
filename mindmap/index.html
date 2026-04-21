@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>マインドマップ</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #ffffff;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+      max-width: 450px;
+      max-height: 450px;
+      margin: 0 auto;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 6px;
+      padding: 6px 8px;
+      background: #f8f9fa;
+      border-bottom: 1px solid #e0e0e0;
+      flex-shrink: 0;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 5px 12px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: inherit;
+      transition: background 0.15s, transform 0.1s;
+      user-select: none;
+    }
+
+    button:active { transform: scale(0.97); }
+
+    .btn-add    { background: #e8f0fe; color: #1a73e8; }
+    .btn-add:hover { background: #d2e3fc; }
+
+    .btn-save   { background: #e6f4ea; color: #137333; }
+    .btn-save:hover { background: #ceead6; }
+
+    .btn-reset  { background: #fce8e6; color: #c5221f; }
+    .btn-reset  { background: #fce8e6; color: #c5221f; }
+    .btn-reset:hover { background: #f5c6c3; }
+
+    .hint {
+      font-size: 10px;
+      color: #9aa0a6;
+      padding: 3px 8px;
+      text-align: center;
+      flex-shrink: 0;
+      background: #fafafa;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .canvas-wrap {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    canvas {
+      display: block;
+      cursor: default;
+    }
+
+    #editInput {
+      position: absolute;
+      border: 2px solid #1a73e8;
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+      background: #fff;
+      z-index: 10;
+      display: none;
+      text-align: center;
+      box-shadow: 0 2px 8px rgba(26,115,232,0.25);
+    }
+  </style>
+</head>
+<body>
+
+<div class="toolbar">
+  <button class="btn-add"   id="btnAdd">＋ 子ノード</button>
+  <button class="btn-save"  id="btnPng">📷 PNG保存</button>
+  <button class="btn-reset" id="btnReset">↺ リセット</button>
+</div>
+<div class="hint">クリック：選択　ダブルクリック：編集　ドラッグ：移動</div>
+
+<div class="canvas-wrap" id="wrap">
+  <canvas id="canvas"></canvas>
+  <input id="editInput" type="text">
+</div>
+
+<script>
+// ─── 定数 ──────────────────────────────────────────────────
+const NODE_H       = 34;
+const ANIM_MS      = 280;
+const DX_BASE      = 140;  // 親からの水平距離
+const DY_GAP       = 54;   // 同列ノード間の縦間隔
+
+const COLORS = [
+  { bg: '#1a73e8', fg: '#fff' },  // root
+  { bg: '#0b57d0', fg: '#fff' },  // lv1
+  { bg: '#1e7e34', fg: '#fff' },  // lv2
+  { bg: '#e37400', fg: '#fff' },  // lv3
+  { bg: '#a50e0e', fg: '#fff' },  // lv4
+  { bg: '#6200ea', fg: '#fff' },  // lv5+
+];
+
+// ─── 状態 ──────────────────────────────────────────────────
+let nodes      = [];
+let nextId     = 2;
+let selectedId = null;
+let drag       = null;   // { node, ox, oy }
+let editingId  = null;
+let anims      = [];     // [{ id, t0 }]
+let rafId      = null;
+
+// ─── DOM ───────────────────────────────────────────────────
+const wrap      = document.getElementById('wrap');
+const canvas    = document.getElementById('canvas');
+const ctx       = canvas.getContext('2d');
+const editInput = document.getElementById('editInput');
+
+// ─── リサイズ ──────────────────────────────────────────────
+const DPR = window.devicePixelRatio || 1;
+
+function resize() {
+  const r = wrap.getBoundingClientRect();
+  canvas.width  = r.width  * DPR;
+  canvas.height = r.height * DPR;
+  canvas.style.width  = r.width  + 'px';
+  canvas.style.height = r.height + 'px';
+  draw();
+}
+
+window.addEventListener('resize', resize);
+
+// ─── ユーティリティ ───────────────────────────────────────
+function level(id) {
+  const n = nodes.find(n => n.id === id);
+  return (!n || n.parent === null) ? 0 : 1 + level(n.parent);
+}
+
+function color(id) {
+  const lv = level(id);
+  return COLORS[Math.min(lv, COLORS.length - 1)];
+}
+
+function nodeW(node) {
+  ctx.font = level(node.id) === 0
+    ? 'bold 13px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif'
+    : '12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+  return Math.max(72, ctx.measureText(node.text).width + 28);
+}
+
+function hit(px, py) {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const n = nodes[i];
+    const w = nodeW(n);
+    if (px >= n.x - w/2 && px <= n.x + w/2 &&
+        py >= n.y - NODE_H/2 && py <= n.y + NODE_H/2) return n;
+  }
+  return null;
+}
+
+function animScale(id) {
+  const a = anims.find(a => a.id === id);
+  if (!a) return 1;
+  const t = Math.min((Date.now() - a.t0) / ANIM_MS, 1);
+  if (t >= 1) { anims = anims.filter(x => x.id !== id); return 1; }
+  // ease-out elastic light
+  const s = t < 0.5
+    ? 4 * t * t * t
+    : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  return s;
+}
+
+// ─── 描画 ─────────────────────────────────────────────────
+function draw() {
+  const W = canvas.width / DPR;
+  const H = canvas.height / DPR;
+
+  ctx.save();
+  ctx.scale(DPR, DPR);
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, W, H);
+
+  // エッジ
+  nodes.forEach(n => {
+    if (n.parent === null) return;
+    const p = nodes.find(x => x.id === n.parent);
+    if (!p) return;
+    drawEdge(ctx, p, n);
+  });
+
+  // ノード
+  nodes.forEach(n => drawNode(ctx, n));
+
+  ctx.restore();
+
+  if (anims.length > 0) {
+    rafId = requestAnimationFrame(draw);
+  }
+}
+
+function drawEdge(c, from, to) {
+  const fw = nodeW(from);
+  const tw = nodeW(to);
+  const right = to.x >= from.x;
+  const x1 = from.x + (right ? fw/2 : -fw/2);
+  const y1 = from.y;
+  const x2 = to.x   + (right ? -tw/2 : tw/2);
+  const y2 = to.y;
+  const cx = (x1 + x2) / 2;
+
+  c.beginPath();
+  c.moveTo(x1, y1);
+  c.bezierCurveTo(cx, y1, cx, y2, x2, y2);
+  c.strokeStyle = '#c5cae9';
+  c.lineWidth = 1.5;
+  c.stroke();
+}
+
+function drawNode(c, node) {
+  const w   = nodeW(node);
+  const h   = NODE_H;
+  const sc  = animScale(node.id);
+  const sel = node.id === selectedId;
+  const col = color(node.id);
+  const lv  = level(node.id);
+
+  c.save();
+  c.translate(node.x, node.y);
+  c.scale(sc, sc);
+
+  // 影
+  c.shadowColor   = sel ? 'rgba(26,115,232,0.45)' : 'rgba(0,0,0,0.12)';
+  c.shadowBlur    = sel ? 10 : 5;
+  c.shadowOffsetY = 2;
+
+  // 背景
+  c.beginPath();
+  c.roundRect(-w/2, -h/2, w, h, 9);
+  c.fillStyle = col.bg;
+  c.fill();
+
+  // 選択枠
+  if (sel) {
+    c.shadowBlur = 0;
+    c.strokeStyle = 'rgba(255,255,255,0.7)';
+    c.lineWidth = 2;
+    c.stroke();
+  }
+
+  c.shadowColor = 'transparent';
+  c.shadowBlur  = 0;
+
+  // テキスト
+  c.fillStyle    = col.fg;
+  c.font         = lv === 0
+    ? 'bold 13px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif'
+    : '12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+  c.textAlign    = 'center';
+  c.textBaseline = 'middle';
+  c.fillText(node.text, 0, 0);
+
+  c.restore();
+}
+
+// ─── ノード追加 ───────────────────────────────────────────
+function addChild() {
+  const parent = nodes.find(n => n.id === selectedId);
+  if (!parent) { alert('ノードを選択してください'); return; }
+
+  const siblings = nodes.filter(n => n.parent === parent.id);
+  const lv = level(parent.id);
+  const dx = lv === 0 ? DX_BASE : DX_BASE - lv * 10;
+
+  // 左右交互配置
+  const rightSibs = siblings.filter(n => n.x > parent.x);
+  const leftSibs  = siblings.filter(n => n.x <= parent.x);
+  const goRight   = rightSibs.length <= leftSibs.length;
+
+  const sameSide  = goRight ? rightSibs : leftSibs;
+  const yOffset   = (sameSide.length - (sameSide.length - 1) / 2) * DY_GAP;
+  // 縦方向は上から下へ広がるように
+  const baseY     = parent.y + (sameSide.length % 2 === 0 ? 1 : -1) * Math.ceil(sameSide.length / 2) * DY_GAP / 2;
+
+  // シンプルに: 同側 n 番目を 0-indexed で縦積み
+  const idx    = sameSide.length;
+  const totalY = idx * DY_GAP - Math.floor(idx / 2) * DY_GAP;
+  const newY   = parent.y + (idx === 0 ? 0 : (idx % 2 === 1 ? Math.ceil(idx/2) : -Math.floor(idx/2)) * DY_GAP);
+
+  const id = nextId++;
+  nodes.push({
+    id,
+    parent: parent.id,
+    x: parent.x + (goRight ? dx : -dx),
+    y: newY,
+    text: 'ノード',
+  });
+
+  anims.push({ id, t0: Date.now() });
+  selectedId = id;
+  save();
+  cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(draw);
+}
+
+// ─── 永続化 ───────────────────────────────────────────────
+function save() {
+  localStorage.setItem('mm_nodes',  JSON.stringify(nodes));
+  localStorage.setItem('mm_nextId', String(nextId));
+}
+
+function loadSaved() {
+  const raw = localStorage.getItem('mm_nodes');
+  if (!raw) return false;
+  nodes  = JSON.parse(raw);
+  nextId = parseInt(localStorage.getItem('mm_nextId') || '2', 10);
+  selectedId = nodes[0]?.id ?? null;
+  return true;
+}
+
+function initDefault() {
+  const W = wrap.getBoundingClientRect().width;
+  const H = wrap.getBoundingClientRect().height;
+  nodes  = [{ id: 1, parent: null, x: W / 2, y: H / 2, text: 'メインテーマ' }];
+  nextId = 2;
+  selectedId = 1;
+  save();
+}
+
+// ─── PNG エクスポート ─────────────────────────────────────
+function exportPng() {
+  const pad = 48;
+  const sc  = 2;
+
+  // 描画領域の計算（ダミーctxでwidthを測る）
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  nodes.forEach(n => {
+    const w = nodeW(n);
+    minX = Math.min(minX, n.x - w/2);
+    minY = Math.min(minY, n.y - NODE_H/2);
+    maxX = Math.max(maxX, n.x + w/2);
+    maxY = Math.max(maxY, n.y + NODE_H/2);
+  });
+
+  const offW = (maxX - minX + pad * 2) * sc;
+  const offH = (maxY - minY + pad * 2) * sc;
+
+  const off  = document.createElement('canvas');
+  off.width  = offW;
+  off.height = offH;
+  const oc   = off.getContext('2d');
+  oc.scale(sc, sc);
+  oc.translate(-minX + pad, -minY + pad);
+
+  oc.fillStyle = '#fff';
+  oc.fillRect(minX - pad, minY - pad, maxX - minX + pad*2, maxY - minY + pad*2);
+
+  // エッジ
+  nodes.forEach(n => {
+    if (n.parent === null) return;
+    const p = nodes.find(x => x.id === n.parent);
+    if (p) drawEdge(oc, p, n);
+  });
+
+  // ノード（アニメ無し・選択なし）
+  const savedSel = selectedId;
+  selectedId = null;
+  nodes.forEach(n => drawNode(oc, n));
+  selectedId = savedSel;
+
+  const a = document.createElement('a');
+  a.download = 'mindmap.png';
+  a.href = off.toDataURL('image/png');
+  a.click();
+}
+
+// ─── マウス / タッチ ─────────────────────────────────────
+let lastTap = { t: 0, id: null };
+
+function pointerPos(e) {
+  const r = canvas.getBoundingClientRect();
+  if (e.touches) {
+    return { x: e.touches[0].clientX - r.left, y: e.touches[0].clientY - r.top };
+  }
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+function onDown(e) {
+  if (editingId !== null) return;
+  const { x, y } = pointerPos(e);
+  const n = hit(x, y);
+
+  const now = Date.now();
+  if (n && n.id === lastTap.id && now - lastTap.t < 400) {
+    startEdit(n);
+    lastTap = { t: 0, id: null };
+    return;
+  }
+  lastTap = { t: now, id: n ? n.id : null };
+
+  if (n) {
+    selectedId = n.id;
+    drag = { node: n, ox: x - n.x, oy: y - n.y };
+  } else {
+    selectedId = null;
+  }
+  draw();
+}
+
+function onMove(e) {
+  if (!drag) return;
+  const { x, y } = pointerPos(e);
+  drag.node.x = x - drag.ox;
+  drag.node.y = y - drag.oy;
+  draw();
+}
+
+function onUp() {
+  if (drag) { save(); drag = null; }
+}
+
+canvas.addEventListener('mousedown',  onDown);
+canvas.addEventListener('mousemove',  onMove);
+canvas.addEventListener('mouseup',    onUp);
+canvas.addEventListener('mouseleave', onUp);
+
+canvas.addEventListener('touchstart', e => { e.preventDefault(); onDown(e); }, { passive: false });
+canvas.addEventListener('touchmove',  e => { e.preventDefault(); onMove(e); }, { passive: false });
+canvas.addEventListener('touchend',   e => { e.preventDefault(); onUp();    }, { passive: false });
+
+// ─── インライン編集 ───────────────────────────────────────
+function startEdit(node) {
+  editingId = node.id;
+  const w = Math.max(nodeW(node), 90);
+  editInput.style.display = 'block';
+  editInput.style.width   = w + 'px';
+  editInput.style.left    = (node.x - w/2) + 'px';
+  editInput.style.top     = (node.y - NODE_H/2) + 'px';
+  editInput.style.height  = NODE_H + 'px';
+  editInput.value         = node.text;
+  editInput.focus();
+  editInput.select();
+}
+
+function finishEdit() {
+  if (editingId === null) return;
+  const node = nodes.find(n => n.id === editingId);
+  if (node && editInput.value.trim()) node.text = editInput.value.trim();
+  editInput.style.display = 'none';
+  editingId = null;
+  save();
+  draw();
+}
+
+editInput.addEventListener('blur',    finishEdit);
+editInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter')  { e.preventDefault(); finishEdit(); }
+  if (e.key === 'Escape') {
+    editInput.style.display = 'none';
+    editingId = null;
+    draw();
+  }
+});
+
+// ─── ボタン ───────────────────────────────────────────────
+document.getElementById('btnAdd').addEventListener('click', addChild);
+document.getElementById('btnPng').addEventListener('click', exportPng);
+document.getElementById('btnReset').addEventListener('click', () => {
+  if (!confirm('マインドマップをリセットしますか？')) return;
+  localStorage.removeItem('mm_nodes');
+  localStorage.removeItem('mm_nextId');
+  initDefault();
+  draw();
+});
+
+// ─── 起動 ─────────────────────────────────────────────────
+resize();
+if (!loadSaved()) initDefault();
+draw();
+</script>
+</body>
+</html>
