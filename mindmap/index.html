@@ -508,7 +508,7 @@ function initDefault() {
 }
 
 // ─── PNG エクスポート ─────────────────────────────────────
-function exportPng() {
+function buildPngDataUrl() {
   const pad = 48, sc = 2;
   const vns = visibleNodes();
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -536,10 +536,56 @@ function exportPng() {
   });
   vns.forEach(n => drawNode(oc, n, false));
 
-  const a = document.createElement('a');
-  a.download = 'mindmap.png';
-  a.href = off.toDataURL('image/png');
-  a.click();
+  return off.toDataURL('image/png');
+}
+
+function exportPng() {
+  const dataUrl = buildPngDataUrl();
+
+  // iframe内（Notion埋め込み等）ではsandbox制限でdownloadがブロックされるため
+  // オーバーレイ表示にフォールバック
+  const inIframe = (() => { try { return window.self !== window.top; } catch { return true; } })();
+
+  if (!inIframe) {
+    const a = document.createElement('a');
+    a.download = 'mindmap.png';
+    a.href = dataUrl;
+    a.click();
+  } else {
+    showPngModal(dataUrl);
+  }
+}
+
+function showPngModal(dataUrl) {
+  const modal = document.createElement('div');
+  modal.style.cssText = [
+    'position:fixed', 'inset:0', 'background:rgba(0,0,0,0.78)',
+    'display:flex', 'flex-direction:column', 'align-items:center',
+    'justify-content:center', 'z-index:9999', 'gap:10px', 'padding:16px',
+  ].join(';');
+
+  const img = document.createElement('img');
+  img.src = dataUrl;
+  img.style.cssText = [
+    'max-width:100%', 'max-height:calc(100% - 80px)',
+    'border-radius:8px', 'box-shadow:0 4px 24px rgba(0,0,0,0.5)',
+  ].join(';');
+
+  const hint = document.createElement('p');
+  hint.textContent = '画像を長押し（または右クリック）→「画像を保存」';
+  hint.style.cssText = 'color:#fff;font-size:11px;text-align:center;margin:0';
+
+  const btn = document.createElement('button');
+  btn.textContent = '✕ 閉じる';
+  btn.style.cssText = [
+    'padding:5px 18px', 'background:#fff', 'border:none',
+    'border-radius:6px', 'cursor:pointer', 'font-size:12px', 'font-weight:500',
+  ].join(';');
+  btn.onclick = () => modal.remove();
+
+  modal.append(img, hint, btn);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  document.body.appendChild(modal);
 }
 
 // ─── ポインタイベント ─────────────────────────────────────
