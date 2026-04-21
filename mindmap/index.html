@@ -61,6 +61,7 @@
       border-bottom: 1px solid #f0f0f0;
       white-space: nowrap;
       overflow: hidden;
+      letter-spacing: -0.2px;
     }
 
     .canvas-wrap {
@@ -94,7 +95,7 @@
   <button class="btn-save"  id="btnPng">📷 PNG保存</button>
   <button class="btn-reset" id="btnReset">↺ リセット</button>
 </div>
-<div class="hint">クリック：選択　ダブルクリック：編集　ノードドラッグ：移動　空白ドラッグ：スクロール</div>
+<div class="hint">Tab:子追加　Enter:兄弟追加　Del:削除　F2:編集　Space:折畳　←→↑↓:移動　Ctrl+Z/Y:元に戻す/やり直し</div>
 
 <div class="canvas-wrap" id="wrap">
   <canvas id="canvas"></canvas>
@@ -103,10 +104,11 @@
 
 <script>
 // ─── 定数 ─────────────────────────────────────────────────
-const NODE_H  = 34;
-const ANIM_MS = 280;
-const DX_BASE = 130;
-const DY_GAP  = 56;
+const NODE_H   = 34;
+const ANIM_MS  = 280;
+const DX_BASE  = 130;
+const DY_GAP   = 56;
+const MAX_HIST = 50;
 
 const COLORS = [
   { bg: '#1a73e8', fg: '#fff' },
@@ -124,16 +126,17 @@ let selectedId = null;
 let editingId  = null;
 let anims      = [];
 let rafId      = null;
+let view       = { x: 0, y: 0 };
+let isPanning  = false;
+let panStart   = null;
+let drag       = null;    // { node, ox, oy }
+let downPos    = null;
+let hasMoved   = false;
+let preDrag    = null;    // ドラッグ前スナップショット
 
-// パン用
-let view      = { x: 0, y: 0 };
-let isPanning = false;
-let panStart  = null;
-
-// ノードドラッグ用
-let drag     = null;   // { node, ox, oy }
-let downPos  = null;
-let hasMoved = false;
+// Undo / Redo
+let history = [];
+let future  = [];
 
 // ─── DOM ──────────────────────────────────────────────────
 const wrap      = document.getElementById('wrap');
@@ -168,17 +171,25 @@ function getColor(id) {
 }
 
 function nodeW(node, c) {
-  const lv = level(node.id);
   const cc = c || ctx;
-  cc.font = lv === 0
+  cc.font = level(node.id) === 0
     ? 'bold 13px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif'
     : '12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
   return Math.max(72, cc.measureText(node.text).width + 28);
 }
 
+function isVisible(node) {
+  if (node.parent === null) return true;
+  const p = nodes.find(n => n.id === node.parent);
+  return p && !p.collapsed && isVisible(p);
+}
+
+function visibleNodes() { return nodes.filter(isVisible); }
+
 function hit(wx, wy) {
-  for (let i = nodes.length - 1; i >= 0; i--) {
-    const n = nodes[i];
+  const vns = visibleNodes();
+  for (let i = vns.length - 1; i >= 0; i--) {
+    const n = vns[i];
     const w = nodeW(n);
     if (wx >= n.x - w/2 && wx <= n.x + w/2 &&
         wy >= n.y - NODE_H/2 && wy <= n.y + NODE_H/2) return n;
@@ -191,7 +202,37 @@ function animScale(id) {
   if (!a) return 1;
   const t = Math.min((Date.now() - a.t0) / ANIM_MS, 1);
   if (t >= 1) { anims = anims.filter(x => x.id !== id); return 1; }
-  return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2;
+  return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
+}
+
+// ─── Undo / Redo ──────────────────────────────────────────
+function makeState() {
+  return { nodes: JSON.parse(JSON.stringify(nodes)), nextId, selectedId };
+}
+
+function snapshot() {
+  history.push(makeState());
+  if (history.length > MAX_HIST) history.shift();
+  future = [];
+}
+
+function applyState(s) {
+  nodes      = JSON.parse(JSON.stringify(s.nodes));
+  nextId     = s.nextId;
+  selectedId = s.selectedId;
+  save(); draw();
+}
+
+function undo() {
+  if (!history.length) return;
+  future.push(makeState());
+  applyState(history.pop());
+}
+
+function redo() {
+  if (!future.length) return;
+  history.push(makeState());
+  applyState(future.pop());
 }
 
 // ─── 描画 ─────────────────────────────────────────────────
@@ -206,13 +247,15 @@ function draw() {
   ctx.fillRect(0, 0, W, H);
   ctx.translate(view.x, view.y);
 
-  nodes.forEach(n => {
+  const vns = visibleNodes();
+
+  vns.forEach(n => {
     if (n.parent === null) return;
     const p = nodes.find(x => x.id === n.parent);
     if (p) drawEdge(ctx, p, n);
   });
 
-  nodes.forEach(n => drawNode(ctx, n, n.id === selectedId));
+  vns.forEach(n => drawNode(ctx, n, n.id === selectedId));
 
   ctx.restore();
 
@@ -238,20 +281,24 @@ function drawNode(c, node, selected) {
   const sc  = animScale(node.id);
   const col = getColor(node.id);
   const lv  = level(node.id);
+  const hasCollapsed = node.collapsed && nodes.some(n => n.parent === node.id);
 
   c.save();
   c.translate(node.x, node.y);
   c.scale(sc, sc);
 
+  // 影
   c.shadowColor   = selected ? 'rgba(26,115,232,0.45)' : 'rgba(0,0,0,0.12)';
   c.shadowBlur    = selected ? 10 : 5;
   c.shadowOffsetY = 2;
 
+  // 背景
   c.beginPath();
   c.roundRect(-w/2, -NODE_H/2, w, NODE_H, 9);
   c.fillStyle = col.bg;
   c.fill();
 
+  // 選択枠
   if (selected) {
     c.shadowBlur  = 0;
     c.strokeStyle = 'rgba(255,255,255,0.75)';
@@ -262,6 +309,7 @@ function drawNode(c, node, selected) {
   c.shadowColor = 'transparent';
   c.shadowBlur  = 0;
 
+  // テキスト
   c.fillStyle    = col.fg;
   c.font         = lv === 0
     ? 'bold 13px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif'
@@ -270,39 +318,86 @@ function drawNode(c, node, selected) {
   c.textBaseline = 'middle';
   c.fillText(node.text, 0, 0);
 
+  // 折りたたみバッジ（子を持つノードが collapsed のとき右端に表示）
+  if (hasCollapsed) {
+    const bx = w/2 + 2, br = 7;
+    c.beginPath();
+    c.arc(bx, 0, br, 0, Math.PI * 2);
+    c.fillStyle   = '#fff';
+    c.shadowColor = 'rgba(0,0,0,0.15)';
+    c.shadowBlur  = 3;
+    c.fill();
+    c.shadowBlur  = 0;
+    c.strokeStyle = col.bg;
+    c.lineWidth   = 1.5;
+    c.stroke();
+    c.fillStyle    = col.bg;
+    c.font         = 'bold 10px sans-serif';
+    c.textAlign    = 'center';
+    c.textBaseline = 'middle';
+    c.fillText('+', bx, 0);
+  }
+
   c.restore();
 }
 
-// ─── ノード追加 ───────────────────────────────────────────
-function addChild() {
-  const parent = nodes.find(n => n.id === selectedId);
-  if (!parent) { alert('ノードを選択してください'); return; }
-
+// ─── ノード配置ヘルパー ────────────────────────────────────
+function placeChild(parent) {
   const lv       = level(parent.id);
   const siblings = nodes.filter(n => n.parent === parent.id);
 
   let goRight;
   if (parent.parent === null) {
-    const rCount = siblings.filter(n => n.x > parent.x).length;
-    const lCount = siblings.filter(n => n.x < parent.x).length;
-    goRight = rCount <= lCount;
+    const rC = siblings.filter(n => n.x > parent.x).length;
+    const lC = siblings.filter(n => n.x < parent.x).length;
+    goRight  = rC <= lC;
   } else {
     const gp = nodes.find(n => n.id === parent.parent);
     goRight  = gp ? parent.x >= gp.x : true;
   }
 
-  const sameSide = siblings.filter(n => goRight ? n.x > parent.x : n.x <= parent.x);
-  const idx      = sameSide.length;
-  const dy       = idx === 0 ? 0
+  const same = siblings.filter(n => goRight ? n.x > parent.x : n.x <= parent.x);
+  const idx  = same.length;
+  const dy   = idx === 0 ? 0
     : (idx % 2 === 1 ? Math.ceil(idx/2) : -Math.floor(idx/2)) * DY_GAP;
-  const dx       = Math.max(DX_BASE - lv * 15, 80);
+  const dx   = Math.max(DX_BASE - lv * 15, 80);
+
+  return { x: parent.x + (goRight ? dx : -dx), y: parent.y + dy };
+}
+
+// ─── ノード操作 ───────────────────────────────────────────
+function addChild() {
+  const parent = nodes.find(n => n.id === selectedId);
+  if (!parent) { alert('ノードを選択してください'); return; }
+
+  snapshot();
+  if (parent.collapsed) parent.collapsed = false;
+
+  const { x, y } = placeChild(parent);
+  const id = nextId++;
+  nodes.push({ id, parent: parent.id, x, y, text: 'ノード' });
+
+  anims.push({ id, t0: Date.now() });
+  selectedId = id;
+  save();
+  cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(draw);
+}
+
+function addSibling() {
+  if (!selectedId) return;
+  const cur = nodes.find(n => n.id === selectedId);
+  if (!cur) return;
+  if (cur.parent === null) { addChild(); return; }
+
+  snapshot();
 
   const id = nextId++;
   nodes.push({
     id,
-    parent: parent.id,
-    x: parent.x + (goRight ? dx : -dx),
-    y: parent.y + dy,
+    parent: cur.parent,
+    x: cur.x,
+    y: cur.y + DY_GAP,
     text: 'ノード',
   });
 
@@ -311,6 +406,76 @@ function addChild() {
   save();
   cancelAnimationFrame(rafId);
   rafId = requestAnimationFrame(draw);
+}
+
+function deleteNode() {
+  if (!selectedId) return;
+  const node = nodes.find(n => n.id === selectedId);
+  if (!node || node.parent === null) return;
+
+  snapshot();
+
+  function desc(id) {
+    return nodes.filter(n => n.parent === id).flatMap(c => [c.id, ...desc(c.id)]);
+  }
+
+  const toDelete = new Set([selectedId, ...desc(selectedId)]);
+  const parentId = node.parent;
+  nodes      = nodes.filter(n => !toDelete.has(n.id));
+  selectedId = parentId;
+  save();
+  draw();
+}
+
+function toggleCollapse() {
+  if (!selectedId) return;
+  const node = nodes.find(n => n.id === selectedId);
+  if (!node || !nodes.some(n => n.parent === node.id)) return;
+
+  snapshot();
+  node.collapsed = !node.collapsed;
+  save();
+  draw();
+}
+
+// ─── 矢印キーナビ ─────────────────────────────────────────
+function navigateArrow(key) {
+  if (!selectedId) return;
+  const cur = nodes.find(n => n.id === selectedId);
+  if (!cur) return;
+
+  const vns      = visibleNodes();
+  const children = vns.filter(n => n.parent === cur.id);
+  const parent   = nodes.find(n => n.id === cur.parent);
+  const siblings = parent ? vns.filter(n => n.parent === cur.parent && n.id !== cur.id) : [];
+
+  let target = null;
+
+  switch (key) {
+    case 'ArrowLeft':
+      target = parent || null;
+      break;
+    case 'ArrowRight':
+      if (children.length) {
+        target = children.reduce((a, b) =>
+          Math.abs(a.y - cur.y) <= Math.abs(b.y - cur.y) ? a : b);
+      }
+      break;
+    case 'ArrowUp': {
+      const above = siblings.filter(n => n.y < cur.y);
+      if (above.length) target = above.reduce((a, b) =>
+        Math.abs(a.y - cur.y) <= Math.abs(b.y - cur.y) ? a : b);
+      break;
+    }
+    case 'ArrowDown': {
+      const below = siblings.filter(n => n.y > cur.y);
+      if (below.length) target = below.reduce((a, b) =>
+        Math.abs(a.y - cur.y) <= Math.abs(b.y - cur.y) ? a : b);
+      break;
+    }
+  }
+
+  if (target) { selectedId = target.id; draw(); }
 }
 
 // ─── 永続化 ───────────────────────────────────────────────
@@ -323,10 +488,10 @@ function save() {
 function loadSaved() {
   const raw = localStorage.getItem('mm2_nodes');
   if (!raw) return false;
-  nodes      = JSON.parse(raw);
-  nextId     = parseInt(localStorage.getItem('mm2_nextId') || '2', 10);
-  const sv   = localStorage.getItem('mm2_view');
-  view       = sv ? JSON.parse(sv) : { x: 0, y: 0 };
+  nodes  = JSON.parse(raw);
+  nextId = parseInt(localStorage.getItem('mm2_nextId') || '2', 10);
+  const sv = localStorage.getItem('mm2_view');
+  view = sv ? JSON.parse(sv) : { x: 0, y: 0 };
   selectedId = nodes[0]?.id ?? null;
   return true;
 }
@@ -335,6 +500,8 @@ function initDefault() {
   nodes      = [{ id: 1, parent: null, x: 0, y: 0, text: 'メインテーマ' }];
   nextId     = 2;
   selectedId = 1;
+  history    = [];
+  future     = [];
   const r    = wrap.getBoundingClientRect();
   view       = { x: r.width / 2, y: r.height / 2 };
   save();
@@ -343,11 +510,14 @@ function initDefault() {
 // ─── PNG エクスポート ─────────────────────────────────────
 function exportPng() {
   const pad = 48, sc = 2;
+  const vns = visibleNodes();
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  nodes.forEach(n => {
+  vns.forEach(n => {
     const w = nodeW(n);
-    minX = Math.min(minX, n.x - w/2);  minY = Math.min(minY, n.y - NODE_H/2);
-    maxX = Math.max(maxX, n.x + w/2);  maxY = Math.max(maxY, n.y + NODE_H/2);
+    minX = Math.min(minX, n.x - w/2 - 10);
+    minY = Math.min(minY, n.y - NODE_H/2);
+    maxX = Math.max(maxX, n.x + w/2 + 10);
+    maxY = Math.max(maxY, n.y + NODE_H/2);
   });
 
   const off  = document.createElement('canvas');
@@ -359,12 +529,12 @@ function exportPng() {
   oc.fillStyle = '#fff';
   oc.fillRect(minX - pad, minY - pad, maxX - minX + pad*2, maxY - minY + pad*2);
 
-  nodes.forEach(n => {
+  vns.forEach(n => {
     if (n.parent === null) return;
     const p = nodes.find(x => x.id === n.parent);
     if (p) drawEdge(oc, p, n);
   });
-  nodes.forEach(n => drawNode(oc, n, false));
+  vns.forEach(n => drawNode(oc, n, false));
 
   const a = document.createElement('a');
   a.download = 'mindmap.png';
@@ -372,14 +542,13 @@ function exportPng() {
   a.click();
 }
 
-// ─── ポインタ位置 ─────────────────────────────────────────
+// ─── ポインタイベント ─────────────────────────────────────
 function pointerPos(e) {
   const r = canvas.getBoundingClientRect();
   if (e.touches) return { x: e.touches[0].clientX - r.left, y: e.touches[0].clientY - r.top };
   return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
 
-// ─── マウス／タッチイベント ───────────────────────────────
 function onDown(e) {
   if (editingId !== null) return;
   const { x, y } = pointerPos(e);
@@ -391,7 +560,8 @@ function onDown(e) {
 
   if (n) {
     selectedId = n.id;
-    drag = { node: n, ox: wx - n.x, oy: wy - n.y };
+    preDrag    = makeState();
+    drag       = { node: n, ox: wx - n.x, oy: wy - n.y };
   } else {
     isPanning = true;
     panStart  = { x: x - view.x, y: y - view.y };
@@ -413,7 +583,6 @@ function onMove(e) {
     const { x: wx, y: wy } = toWorld(x, y);
     drag.node.x = wx - drag.ox;
     drag.node.y = wy - drag.oy;
-    // 編集中のinputも追従
     if (editingId === drag.node.id) repositionInput(drag.node);
     draw();
   } else if (isPanning) {
@@ -424,10 +593,16 @@ function onMove(e) {
 }
 
 function onUp() {
-  if (drag && hasMoved) save();
+  if (drag && hasMoved && preDrag) {
+    history.push(preDrag);
+    if (history.length > MAX_HIST) history.shift();
+    future = [];
+    save();
+  }
   drag      = null;
   isPanning = false;
   downPos   = null;
+  preDrag   = null;
 }
 
 canvas.addEventListener('mousedown',  onDown);
@@ -435,7 +610,6 @@ canvas.addEventListener('mousemove',  onMove);
 canvas.addEventListener('mouseup',    onUp);
 canvas.addEventListener('mouseleave', onUp);
 
-// ダブルクリック：ネイティブイベントを使用
 canvas.addEventListener('dblclick', e => {
   if (editingId !== null) return;
   const { x, y } = pointerPos(e);
@@ -452,10 +626,10 @@ canvas.addEventListener('touchend',   e => { e.preventDefault(); onUp();    }, {
 function repositionInput(node) {
   const w  = Math.max(nodeW(node), 90);
   const sc = toScreen(node.x, node.y);
-  editInput.style.left   = (sc.x - w/2) + 'px';
+  editInput.style.left   = (sc.x - w/2)     + 'px';
   editInput.style.top    = (sc.y - NODE_H/2) + 'px';
-  editInput.style.width  = w + 'px';
-  editInput.style.height = NODE_H + 'px';
+  editInput.style.width  = w                 + 'px';
+  editInput.style.height = NODE_H            + 'px';
 }
 
 function startEdit(node) {
@@ -463,17 +637,16 @@ function startEdit(node) {
   repositionInput(node);
   editInput.style.display = 'block';
   editInput.value = node.text;
-  // rAF でフォーカス：display:block の反映後に focus させる
-  requestAnimationFrame(() => {
-    editInput.focus();
-    editInput.select();
-  });
+  requestAnimationFrame(() => { editInput.focus(); editInput.select(); });
 }
 
 function finishEdit() {
   if (editingId === null) return;
   const node = nodes.find(n => n.id === editingId);
-  if (node && editInput.value.trim()) node.text = editInput.value.trim();
+  if (node && editInput.value.trim() && editInput.value.trim() !== node.text) {
+    snapshot();
+    node.text = editInput.value.trim();
+  }
   editInput.style.display = 'none';
   editingId = null;
   save();
@@ -482,8 +655,62 @@ function finishEdit() {
 
 editInput.addEventListener('blur', finishEdit);
 editInput.addEventListener('keydown', e => {
+  e.stopPropagation(); // document への伝播を止めて誤発火を防ぐ
   if (e.key === 'Enter')  { e.preventDefault(); finishEdit(); }
-  if (e.key === 'Escape') { editInput.style.display = 'none'; editingId = null; draw(); }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    editInput.style.display = 'none';
+    editingId = null;
+    draw();
+  }
+});
+
+// ─── キーボードショートカット ─────────────────────────────
+document.addEventListener('keydown', e => {
+  if (editingId !== null) return; // 編集中は editInput に委譲
+  const ctrl = e.ctrlKey || e.metaKey;
+
+  // Undo / Redo
+  if (ctrl && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
+  if (ctrl && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
+
+  switch (e.key) {
+    case 'Tab':
+      e.preventDefault();
+      if (selectedId) addChild();
+      break;
+    case 'Enter':
+      e.preventDefault();
+      if (selectedId) addSibling();
+      break;
+    case 'Delete':
+    case 'Backspace':
+      e.preventDefault();
+      deleteNode();
+      break;
+    case 'F2':
+      e.preventDefault();
+      if (selectedId) {
+        const n = nodes.find(n => n.id === selectedId);
+        if (n && isVisible(n)) startEdit(n);
+      }
+      break;
+    case 'Escape':
+      selectedId = null;
+      draw();
+      break;
+    case 'ArrowLeft':
+    case 'ArrowRight':
+    case 'ArrowUp':
+    case 'ArrowDown':
+      e.preventDefault();
+      navigateArrow(e.key);
+      break;
+    case ' ':
+      e.preventDefault();
+      toggleCollapse();
+      break;
+  }
 });
 
 // ─── ボタン ───────────────────────────────────────────────
@@ -491,7 +718,7 @@ document.getElementById('btnAdd').addEventListener('click', addChild);
 document.getElementById('btnPng').addEventListener('click', exportPng);
 document.getElementById('btnReset').addEventListener('click', () => {
   if (!confirm('マインドマップをリセットしますか？')) return;
-  ['mm2_nodes','mm2_nextId','mm2_view'].forEach(k => localStorage.removeItem(k));
+  ['mm2_nodes', 'mm2_nextId', 'mm2_view'].forEach(k => localStorage.removeItem(k));
   initDefault();
   draw();
 });
