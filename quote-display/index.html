@@ -14,7 +14,7 @@
     html, body {
       width: 100%;
       height: 100%;
-      background: #ffffff;
+      background: transparent;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -24,16 +24,16 @@
     .widget {
       max-width: 350px;
       max-height: 350px;
-      width: 100%;
+      width: 350px;
       height: 350px;
-      background: #ffffff;
-      border: 2px solid #2e7d32;
+      background: transparent;
+      border: 2px solid #e65100;
       border-radius: 16px;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 28px 24px;
+      padding: 28px 24px 44px;
       position: relative;
       overflow: hidden;
     }
@@ -41,10 +41,10 @@
     .widget::before {
       content: '\201C';
       position: absolute;
-      top: 8px;
-      left: 16px;
+      top: 4px;
+      left: 14px;
       font-size: 72px;
-      color: #a5d6a7;
+      color: #ffcc80;
       line-height: 1;
       font-family: Georgia, serif;
       pointer-events: none;
@@ -53,10 +53,10 @@
     .widget::after {
       content: '\201D';
       position: absolute;
-      bottom: 48px;
-      right: 16px;
+      bottom: 44px;
+      right: 14px;
       font-size: 72px;
-      color: #a5d6a7;
+      color: #ffcc80;
       line-height: 1;
       font-family: Georgia, serif;
       pointer-events: none;
@@ -64,14 +64,14 @@
 
     .quote-text {
       font-size: 15px;
-      line-height: 1.75;
-      color: #1b5e20;
+      line-height: 1.8;
+      color: #bf360c;
       text-align: center;
       z-index: 1;
       opacity: 0;
       transform: translateY(8px);
-      transition: opacity 0.6s ease, transform 0.6s ease;
-      max-height: 220px;
+      transition: opacity 0.5s ease, transform 0.5s ease;
+      max-height: 200px;
       overflow: hidden;
     }
 
@@ -81,41 +81,69 @@
     }
 
     .quote-author {
-      margin-top: 20px;
+      margin-top: 16px;
       font-size: 12px;
-      color: #388e3c;
+      color: #e64a19;
       letter-spacing: 0.08em;
       text-align: center;
       z-index: 1;
       opacity: 0;
-      transition: opacity 0.6s ease 0.2s;
+      transition: opacity 0.5s ease 0.15s;
     }
 
     .quote-author.visible {
       opacity: 1;
     }
 
-    .author-name {
-      font-weight: bold;
-      font-size: 13px;
-      color: #2e7d32;
-    }
-
     .divider {
-      width: 40px;
+      width: 36px;
       height: 2px;
-      background: #66bb6a;
+      background: #ff8a65;
       margin: 0 auto 8px;
       border-radius: 2px;
     }
 
-    .next-update {
+    .author-name {
+      font-weight: bold;
+      font-size: 13px;
+      color: #d84315;
+    }
+
+    .footer {
       position: absolute;
       bottom: 10px;
-      right: 14px;
+      left: 0;
+      right: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+    }
+
+    .next-update {
       font-size: 10px;
-      color: #a5d6a7;
+      color: #ffab76;
       font-family: sans-serif;
+    }
+
+    .next-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 2px 4px;
+      border-radius: 4px;
+      line-height: 1;
+      opacity: 0.7;
+      transition: opacity 0.2s, transform 0.3s;
+    }
+
+    .next-btn:hover {
+      opacity: 1;
+    }
+
+    .next-btn.spinning {
+      transform: rotate(360deg);
     }
   </style>
 </head>
@@ -126,49 +154,52 @@
       <div class="divider"></div>
       <span class="author-name" id="authorName"></span>
     </div>
-    <span class="next-update" id="nextUpdate"></span>
+    <div class="footer">
+      <span class="next-update" id="nextUpdate"></span>
+      <button class="next-btn" id="nextBtn" title="次の名言へ">🔄</button>
+    </div>
   </div>
 
   <script>
     const QUOTES = [
       { text: "成功とは、情熱を失わずに失敗から失敗へと渡り歩けることである。", author: "ウィンストン・チャーチル" },
       { text: "想像力は知識より重要である。知識には限界があるが、想像力は世界を包む。", author: "アルベルト・アインシュタイン" },
-      { text: "人生はどこかに行くためではなく、どこかにいるためにある。", author: "マシュー・アーノルド" },
       { text: "千里の道も一歩から。", author: "老子" },
       { text: "自分を信じることができれば、何でもできる。", author: "テオドア・ルーズベルト" },
-      { text: "人は誰でも自分の主人であり、自分の運命の船長である。", author: "W・E・ヘンリー" },
       { text: "夢を見ることができれば、それを実現することもできる。", author: "ウォルト・ディズニー" },
-      { text: "行動こそがすべてである。行動する人は少なく、語る人は多い。", author: "クレメント・ストーン" },
       { text: "最大の栄光は一度も失敗しないことではなく、失敗するたびに立ち上がることにある。", author: "孔子" },
-      { text: "われわれは行動によって幸福になるのであり、休息によってではない。", author: "トマス・ア・ケンピス" },
       { text: "昨日から学び、今日のために生き、明日に希望を持て。", author: "アルベルト・アインシュタイン" },
-      { text: "平和とは、争いのない状態ではなく、徳、真実、正義に従う気質である。", author: "バルーフ・スピノザ" },
       { text: "我思う、ゆえに我あり。", author: "ルネ・デカルト" },
       { text: "知ることは力なり。", author: "フランシス・ベーコン" },
-      { text: "一日一善。", author: "ベンジャミン・フランクリン" },
       { text: "幸福になりたければ、幸福になろうとする努力をしなさい。", author: "ソクラテス" },
       { text: "他人のために生きてこそ、人生に価値がある。", author: "アルベルト・アインシュタイン" },
       { text: "時間こそ最も価値ある資源である。時間は再生不能だ。", author: "ピーター・ドラッカー" },
-      { text: "好奇心のない人間は存在しているだけで、生きてはいない。", author: "ゴーテ" },
       { text: "われわれは自らが考えるところのものになる。", author: "マハトマ・ガンジー" },
       { text: "挑戦して失敗を恐れるより、何もしないことを恐れよ。", author: "本田宗一郎" },
       { text: "困難の中に機会がある。", author: "アルベルト・アインシュタイン" },
       { text: "継続は力なり。", author: "ナポレオン・ヒル" },
       { text: "過去は変えられない。しかし未来は今から変えられる。", author: "アルフレッド・アドラー" },
+      { text: "人生とは、今この瞬間の積み重ねである。", author: "マルクス・アウレリウス" },
+      { text: "偉大な業績は、小さな積み重ねによって達成される。", author: "サミュエル・スマイルズ" },
+      { text: "行動することで勇気が湧いてくる。待っていても勇気は来ない。", author: "デール・カーネギー" },
+      { text: "あなたの時間は限られている。他人の人生を生きることで無駄にするな。", author: "スティーブ・ジョブズ" },
+      { text: "人生の目的は幸福ではなく、有意義であることだ。", author: "バーナード・ショー" },
+      { text: "一番暗いのは夜明け前。どんな逆境も必ず終わりがある。", author: "トーマス・フラー" },
+      { text: "失敗は成功のもと。転んでもただでは起きない。", author: "松下幸之助" },
     ];
+
+    let currentIndex = getHourlyIndex();
+    let manualOverride = false;
 
     function getHourlyIndex() {
       const now = new Date();
-      // Use year + day of year + hour as seed to pick a quote that changes hourly
       const seed = now.getFullYear() * 100000 + getDayOfYear(now) * 24 + now.getHours();
       return seed % QUOTES.length;
     }
 
     function getDayOfYear(date) {
       const start = new Date(date.getFullYear(), 0, 0);
-      const diff = date - start;
-      const oneDay = 1000 * 60 * 60 * 24;
-      return Math.floor(diff / oneDay);
+      return Math.floor((date - start) / (1000 * 60 * 60 * 24));
     }
 
     function getMinutesToNextHour() {
@@ -178,10 +209,8 @@
       return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
     }
 
-    function showQuote() {
-      const idx = getHourlyIndex();
+    function showQuote(idx) {
       const { text, author } = QUOTES[idx];
-
       const textEl = document.getElementById('quoteText');
       const authorEl = document.getElementById('quoteAuthor');
       const nameEl = document.getElementById('authorName');
@@ -201,18 +230,29 @@
       document.getElementById('nextUpdate').textContent = '次の更新まで ' + getMinutesToNextHour();
     }
 
-    showQuote();
-    updateCountdown();
+    document.getElementById('nextBtn').addEventListener('click', () => {
+      manualOverride = true;
+      currentIndex = (currentIndex + 1) % QUOTES.length;
+      showQuote(currentIndex);
 
-    // Update countdown every second
+      const btn = document.getElementById('nextBtn');
+      btn.classList.add('spinning');
+      setTimeout(() => btn.classList.remove('spinning'), 300);
+    });
+
+    showQuote(currentIndex);
+    updateCountdown();
     setInterval(updateCountdown, 1000);
 
-    // Refresh quote at the top of each hour
     function scheduleNextHour() {
       const now = new Date();
       const msToNextHour = (60 - now.getMinutes()) * 60 * 1000 - now.getSeconds() * 1000 - now.getMilliseconds();
       setTimeout(() => {
-        showQuote();
+        if (!manualOverride) {
+          currentIndex = getHourlyIndex();
+          showQuote(currentIndex);
+        }
+        manualOverride = false;
         scheduleNextHour();
       }, msToNextHour);
     }
